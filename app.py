@@ -16,14 +16,11 @@ from modules.formatter import dict_to_markdown, style_profile_to_markdown
 from modules.media_analyzer import (
     analyze_image_file,
     analyze_video_file,
-    plan_image_processing,
     plan_video_caption,
-    process_image_for_blog,
 )
 from modules.storage import (
     BASE_DIR,
     OUTPUT_DIR,
-    PROCESSED_IMAGE_DIR,
     UPLOAD_IMAGE_DIR,
     UPLOAD_VIDEO_DIR,
     load_json,
@@ -37,6 +34,8 @@ from modules.style_analyzer import analyze_style
 from modules.llm_client import validate_openai_settings
 from modules.web_research import analyze_business_research, research_business
 from modules.analysis_gate import business_analysis_warning
+from modules.post_quality import evaluate_blog_post, quality_report_to_markdown
+from modules.cost_control import get_cost_settings, make_metadata_only_image_analysis
 from modules.project_manager import (
     list_projects,
     save_project_snapshot,
@@ -49,14 +48,14 @@ from modules.project_manager import (
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 블로그 글 자동작성 v0.5.6",
+    page_title="네이버 블로그 글 자동작성 v0.5.8-no-image-ai-quality",
     page_icon="✍️",
     layout="wide",
 )
 
-st.title("✍️ 네이버 블로그 글 자동작성 v0.5.6")
+st.title("✍️ 네이버 블로그 글 자동작성 v0.5.8-no-image-ai-quality")
 st.caption(
-    "safe context 우회 방지, 신뢰등급 분리, 업종별 메뉴/서비스 추출을 반영했습니다."
+    "이미지 생성/가공 없이, 토큰 절약 모드와 최종 글 품질 평가 기능을 추가했습니다."
 )
 
 
@@ -216,7 +215,6 @@ for _key, _default in {
 with st.sidebar:
     st.header("설정")
     model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-    image_model = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
     ok, api_msg = validate_openai_settings()
     if ok:
         st.success("API 키 설정 확인됨")
@@ -224,10 +222,20 @@ with st.sidebar:
         st.error(api_msg)
     with st.expander("모델 설정 확인", expanded=False):
         st.caption(f"텍스트/멀티모달 모델: {model}")
-        st.caption(f"이미지 편집 모델: {image_model}")
         st.caption("모델은 .env에서만 수정합니다. 일반 화면에서는 선택하지 않습니다.")
+
+    default_token_save = os.getenv("TOKEN_SAVE_MODE", "1").strip() not in {"0", "false", "False", "OFF", "off"}
+    token_save_mode = st.checkbox("토큰 절약 모드", value=default_token_save)
+    st.session_state["token_save_mode"] = token_save_mode
+    cost_settings = get_cost_settings(token_save_mode)
+    with st.expander("토큰 절약 설정", expanded=False):
+        st.caption(f"검색 출처 전달: 최대 {cost_settings['max_research_sources_for_generation']}개")
+        st.caption(f"이미지 AI 분석: 최대 {cost_settings['max_image_analysis']}장")
+        st.caption(f"분석용 이미지 긴 변: {cost_settings['analysis_image_max_long_side']}px")
+        st.caption(f"검색 excerpt: 최대 {cost_settings['max_source_excerpt_chars']}자")
+        st.caption(f"STEP 4 미디어 문맥: 최대 {cost_settings['max_media_context_items']}개")
     st.caption(".env의 OPENAI_API_KEY가 필요합니다.")
-    st.caption("이미지 가공은 OPENAI_IMAGE_MODEL 사용 가능 계정/모델이어야 합니다.")
+    st.caption("이미지/영상 분석은 OPENAI_MODEL을 사용합니다. 이미지 생성/가공 기능은 제거했습니다.")
 
     st.divider()
     st.header("프로젝트 관리")
@@ -595,8 +603,16 @@ if selected_step == step_options[1]:
                     st.text_area(f"본문 일부 {idx}", value=item.get("text_excerpt", ""), height=120, key=f"research_excerpt_{idx}")
 
 if selected_step == step_options[2]:
-    st.header("진행 3번. 업로드 이미지/영상 분석 + 내 스타일 기반 이미지 가공")
-    st.caption("이미지는 AI가 직접 보고 블로그용 설명을 만들고, 원하면 GPT 이미지 편집으로 블로그용 가공본도 생성합니다. 영상은 프레임 분석 후 블로그 설명과 추천 자막 초안을 만듭니다.")
+    st.header("진행 3번. 업로드 이미지/영상 분석 + 영상 자막 기획")
+    st.caption("이미지는 AI가 직접 보고 블로그용 설명만 만듭니다. 이미지 생성/가공은 하지 않습니다. 영상은 프레임 분석 후 블로그 설명과 선택 자막 초안을 만듭니다.")
+
+    cost_settings = get_cost_settings(st.session_state.get("token_save_mode", True))
+    if cost_settings["token_save_mode"]:
+        st.info(
+            f"토큰 절약 모드 ON: 이미지 AI 분석은 최대 {cost_settings['max_image_analysis']}장까지 실행하고, "
+            f"분석용 이미지는 긴 변 {cost_settings['analysis_image_max_long_side']}px로 축소합니다. "
+            "초과 이미지는 원본 파일은 보관하되 간단 설명 기반으로만 등록합니다."
+        )
 
     with st.form("media_form"):
         st.subheader("이미지 업로드")
@@ -620,14 +636,28 @@ if selected_step == step_options[2]:
         else:
             try:
                 if image_files:
+                    max_image_analysis = int(cost_settings["max_image_analysis"])
                     with st.spinner("이미지를 AI로 분석하고 있습니다..."):
                         for idx, file in enumerate(image_files, start=1):
                             path = save_uploaded_file(file, UPLOAD_IMAGE_DIR)
                             desc = image_desc_lines[idx - 1] if idx - 1 < len(image_desc_lines) else ""
-                            analysis = analyze_image_file(Path(path), manual_description=desc, model=model)
+                            if idx <= max_image_analysis:
+                                analysis = analyze_image_file(
+                                    Path(path),
+                                    manual_description=desc,
+                                    model=model,
+                                    resize_for_analysis=bool(cost_settings["resize_images_for_analysis"]),
+                                    max_long_side=int(cost_settings["analysis_image_max_long_side"]),
+                                )
+                            else:
+                                analysis = make_metadata_only_image_analysis(
+                                    filename=path.name,
+                                    description=desc,
+                                    reason=f"토큰 절약 모드: {max_image_analysis}장 초과 이미지는 AI 비전 분석 생략",
+                                )
                             images_result.append({
                                 "filename": path.name,
-                                "saved_path": str(path),
+                                "saved_path": to_relative_path(path),
                                 "description": desc,
                                 "analysis": analysis,
                                 **analysis,
@@ -641,7 +671,7 @@ if selected_step == step_options[2]:
                             analysis = analyze_video_file(Path(path), manual_description=desc, model=model)
                             videos_result.append({
                                 "filename": path.name,
-                                "saved_path": str(path),
+                                "saved_path": to_relative_path(path),
                                 "description": desc,
                                 "analysis": analysis,
                                 **analysis,
@@ -670,22 +700,12 @@ if selected_step == step_options[2]:
                     st.markdown(f"**영상 {idx}: {item.get('filename', '')}**")
                     st.json(item.get("analysis", item))
 
-    st.subheader("3-2. 내 스타일 기반 이미지 가공 / 영상 자막 기획")
-    st.caption("이미지 가공은 선택 기능입니다. 실제 편집 실행 시 OpenAI 이미지 API 비용이 추가될 수 있습니다.")
+    st.subheader("3-2. 영상 자막 기획")
+    st.caption("이미지 생성/가공은 제거했습니다. 업로드한 원본 사진과 이미지 분석 설명만 글에 반영합니다.")
 
-    v1, v2, v3, v4 = st.columns(4)
-    with v1:
-        enable_overlay = st.checkbox("이미지 자막/라벨 넣기", value=False)
-    with v2:
-        enable_video_subtitle = st.checkbox("영상 자막 초안 만들기", value=False)
-    with v3:
-        overlay_style = st.selectbox("자막/라벨 톤", ["정보형", "감성형", "후기형", "깔끔한 라벨형"], index=0)
-    with v4:
-        enable_processing = st.checkbox("이미지 가공 실행", value=False)
+    enable_video_subtitle = st.checkbox("영상 자막 초안 만들기", value=False)
 
-    st.caption("자막/라벨은 선택입니다. 체크하지 않으면 사진·영상 분석 설명만 글에 반영하고, 자막 문구는 만들지 않습니다.")
-
-    process_button = st.button("이미지 가공 계획 / 선택 자막 계획 만들기", type="primary", use_container_width=True)
+    process_button = st.button("영상 자막 계획 만들기 / 다음 단계 준비", type="primary", use_container_width=True)
 
     if process_button:
         if not st.session_state.get("style_profile"):
@@ -696,29 +716,7 @@ if selected_step == step_options[2]:
             st.error("먼저 STEP 3에서 이미지/영상을 분석하세요.")
         else:
             try:
-                updated_images = []
                 updated_videos = []
-                if st.session_state.get("image_analysis"):
-                    with st.spinner("이미지 가공 계획을 만들고 있습니다..."):
-                        for item in st.session_state["image_analysis"]:
-                            plan = plan_image_processing(
-                                image_analysis=item.get("analysis", item),
-                                style_profile=st.session_state["style_profile"],
-                                business_analysis=st.session_state.get("business_analysis", {}),
-                                overlay_caption=enable_overlay,
-                                overlay_style=overlay_style,
-                                model=model,
-                            )
-                            item["processing_plan"] = plan
-                            if enable_processing:
-                                processed_info = process_image_for_blog(
-                                    source_image_path=item.get("saved_path", ""),
-                                    processing_plan=plan,
-                                    image_model=image_model,
-                                )
-                                item["processed_info"] = processed_info
-                            updated_images.append(item)
-
                 if st.session_state.get("video_analysis"):
                     if enable_video_subtitle:
                         with st.spinner("영상 자막/설명 계획을 만들고 있습니다..."):
@@ -741,36 +739,14 @@ if selected_step == step_options[2]:
                             }
                             updated_videos.append(item)
 
-                if updated_images:
-                    st.session_state["image_analysis"] = updated_images
-                    save_json("image_analysis.json", updated_images)
                 if updated_videos:
                     st.session_state["video_analysis"] = updated_videos
                     save_json("video_analysis.json", updated_videos)
                 st.session_state["current_step"] = step_options[2]
-                _notify_and_refresh("이미지 가공 계획 / 영상 자막 계획 생성 완료")
+                _notify_and_refresh("영상 자막 계획 / 다음 단계 준비 완료")
             except Exception as exc:  # noqa: BLE001
                 st.error(str(exc))
-                st.info("이미지 편집이 실패하면 '이미지 가공 실행'을 끄고 계획만 생성으로 먼저 테스트해 보세요.")
-
-    if st.session_state.get("image_analysis"):
-        with st.expander("가공 이미지 결과", expanded=False):
-            for idx, item in enumerate(st.session_state["image_analysis"], start=1):
-                st.markdown(f"**사진 {idx}: {item.get('filename', '')}**")
-                if item.get("processing_plan"):
-                    st.write("가공 계획")
-                    st.json(item.get("processing_plan"))
-                processed = item.get("processed_info", {}) or {}
-                processed_path = processed.get("processed_image")
-                if processed_path and Path(processed_path).exists():
-                    st.image(processed_path, caption=f"가공 이미지 {idx}", use_container_width=True)
-                    st.download_button(
-                        f"가공 이미지 {idx} 다운로드",
-                        data=Path(processed_path).read_bytes(),
-                        file_name=Path(processed_path).name,
-                        mime="image/png",
-                        key=f"download_processed_{idx}",
-                    )
+                st.info("영상 자막 계획이 실패하면 자막 초안 생성을 끄고 다음 단계로 진행하세요.")
 
     if st.session_state.get("video_analysis"):
         with st.expander("영상 자막/설명 계획", expanded=False):
@@ -848,6 +824,7 @@ if selected_step == step_options[3]:
                         research_analysis=st.session_state.get("business_analysis", {}),
                         research_sources=research.get("results", []),
                         user_experience_note=st.session_state.get("user_experience_note", ""),
+                        token_save_mode=st.session_state.get("token_save_mode", True),
                         model=model,
                     )
                     st.session_state["generated_post"] = post
@@ -868,6 +845,20 @@ if selected_step == step_options[3]:
                     )
                     st.session_state["generated_package_zip"] = package_info.get("zip_path", "")
                     st.session_state["generated_package_dir"] = package_info.get("package_dir", "")
+
+                    quality_report = evaluate_blog_post(
+                        title_block=title_block,
+                        body=body,
+                        tags=tags,
+                        full_post=post,
+                        business_analysis=st.session_state.get("business_analysis", {}),
+                        business_research=st.session_state.get("business_research", {}),
+                        images=st.session_state.get("image_analysis", []),
+                        videos=st.session_state.get("video_analysis", []),
+                        user_experience_note=st.session_state.get("user_experience_note", ""),
+                    )
+                    st.session_state["quality_report"] = quality_report
+                    save_json("quality_report.json", quality_report)
 
                 st.session_state["current_step"] = step_options[3]
                 _notify_and_refresh("글 생성 완료 - 수동 업로드용 패키지를 함께 만들었습니다.")
@@ -961,8 +952,8 @@ if selected_step == step_options[3]:
             unsafe_allow_html=True,
         )
 
-        upload_tab, preview_tab, package_tab, raw_tab = st.tabs(
-            ["네이버 업로드용", "완성 미리보기", "파일/패키지", "원본 텍스트"]
+        upload_tab, preview_tab, quality_tab, package_tab, raw_tab = st.tabs(
+            ["네이버 업로드용", "완성 미리보기", "품질 평가", "파일/패키지", "원본 텍스트"]
         )
 
         with upload_tab:
@@ -1135,6 +1126,72 @@ if selected_step == step_options[3]:
             st.markdown("### 태그")
             st.write(tags)
 
+        with quality_tab:
+            st.markdown("### 최종 글 품질 평가")
+            quality_report = evaluate_blog_post(
+                title_block=title_block,
+                body=body,
+                tags=tags,
+                full_post=post,
+                business_analysis=st.session_state.get("business_analysis", {}),
+                business_research=st.session_state.get("business_research", {}),
+                images=st.session_state.get("image_analysis", []),
+                videos=st.session_state.get("video_analysis", []),
+                user_experience_note=st.session_state.get("user_experience_note", ""),
+            )
+            st.session_state["quality_report"] = quality_report
+
+            scores = quality_report.get("scores", {})
+            q1, q2, q3, q4 = st.columns(4)
+            q1.metric("전체 점수", f"{scores.get('overall', 0)}점", quality_report.get("grade", "-"))
+            q2.metric("사실성", f"{scores.get('factuality', 0)}점")
+            q3.metric("허위 후기 안전성", f"{scores.get('safety', 0)}점")
+            q4.metric("모바일 가독성", f"{scores.get('mobile_readability', 0)}점")
+
+            q5, q6, q7 = st.columns(3)
+            q5.metric("사진/영상 배치", f"{scores.get('media_placement', 0)}점")
+            q6.metric("네이버 업로드 적합도", f"{scores.get('naver_upload_fit', 0)}점")
+            q7.metric("문체 반영 추정", f"{scores.get('style_fit', 0)}점")
+
+            st.progress(min(100, max(0, int(scores.get("overall", 0)))) / 100)
+
+            warnings = quality_report.get("warnings") or []
+            suggestions = quality_report.get("suggestions") or []
+            risky_lines = quality_report.get("risky_lines") or []
+            softened_preview = quality_report.get("softened_preview") or ""
+
+            if warnings:
+                st.warning("발행 전 확인이 필요한 항목이 있습니다.")
+                for item in warnings:
+                    st.markdown(f"- {item}")
+            else:
+                st.success("현재 기준으로 큰 위험 요소는 적습니다.")
+
+            if suggestions:
+                st.markdown("#### 수정 제안")
+                for item in suggestions:
+                    st.markdown(f"- {item}")
+
+            if risky_lines:
+                with st.expander("위험 문장 확인", expanded=True):
+                    for line in risky_lines:
+                        st.error(line)
+
+            if softened_preview:
+                with st.expander("위험 표현 자동 완화 미리보기", expanded=False):
+                    st.text_area("완화된 본문 미리보기", value=softened_preview, height=420)
+
+            with st.expander("평가 상세 데이터", expanded=False):
+                st.json(quality_report)
+
+            report_md = quality_report_to_markdown(quality_report)
+            st.download_button(
+                "품질 평가 리포트 다운로드",
+                data=report_md.encode("utf-8"),
+                file_name="quality_report.md",
+                mime="text/markdown",
+            )
+
         with package_tab:
             st.markdown("### 네이버 업로드 패키지")
             st.write("본문, 이미지/영상 파일, 업로드 순서 가이드, HTML 미리보기를 하나로 묶었습니다.")
@@ -1179,7 +1236,3 @@ if selected_step == step_options[3]:
     else:
         st.info("아직 생성된 글이 없습니다.")
 
-    if PROCESSED_IMAGE_DIR.exists():
-        generated_count = len(list(PROCESSED_IMAGE_DIR.glob("*.png"))) + len(list(PROCESSED_IMAGE_DIR.glob("*.jpg")))
-        if generated_count:
-            st.caption(f"가공 이미지 저장 폴더: {PROCESSED_IMAGE_DIR} / 현재 {generated_count}개")
