@@ -64,3 +64,23 @@ def test_fact_guard_does_not_overdelete_with_experience_note():
     )
     assert cleaned == text
     assert warnings == []
+
+
+def test_safe_context_does_not_bypass_high_risk_claims():
+    text = "\n".join([
+        "사진상으로는 정말 맛있었어요.",
+        "검색 자료 기준으로는 가성비가 정말 좋았어요.",
+        "공개 자료 기준으로는 사장님이 친절했어요.",
+    ])
+    cleaned, warnings = sanitize_unverified_experience_claims(text, user_experience_note="")
+    assert warnings
+    assert "맛있었" not in cleaned
+    assert "가성비가 정말 좋" not in cleaned
+    assert "사장님이 친절" not in cleaned
+
+
+def test_safe_context_without_risky_claim_stays():
+    text = "사진상으로는 먹음직스러워 보이고 음식 구성이 다양해 보입니다."
+    cleaned, warnings = sanitize_unverified_experience_claims(text, user_experience_note="")
+    assert cleaned == text
+    assert warnings == []

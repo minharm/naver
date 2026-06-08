@@ -10,7 +10,7 @@ sys.modules.setdefault("openai", fake_openai)
 
 from modules.blog_generator import normalize_generated_post, split_generated_post
 from modules.post_exporter import parse_index_spec, parse_body_segments
-from modules.web_research import SearchResult, _quality_score, analyze_business_research
+from modules.web_research import SearchResult, _quality_score, analyze_business_research, _trust_tier, _extract_structured_facts
 
 
 def test_parse_index_spec_ranges_and_unique():
@@ -99,3 +99,50 @@ def test_analyze_business_research_falls_back_when_web_fails_and_quality_low(mon
     )
     assert "검색 결과가 충분하지 않습니다" in result["summary"]
     assert result["source_results"] == []
+
+
+def test_trust_tier_thresholds():
+    assert _trust_tier(70) == "high"
+    assert _trust_tier(45) == "medium"
+    assert _trust_tier(25) == "low"
+    assert _trust_tier(24) == "excluded"
+
+
+def test_high_trust_same_source_name_and_address():
+    item = SearchResult(
+        source="네이버 블로그",
+        title="영통 후이후이 후기",
+        url="https://blog.naver.com/example/high",
+        snippet="후이후이 경기 수원시 영통구 덕영대로 1566",
+        text_excerpt="후이후이 경기 수원시 영통구 덕영대로 1566 " * 10,
+    )
+    score, reasons = _quality_score(item, "후이후이", "경기도 수원시 영통구 덕영대로 1566")
+    assert score >= 70
+    assert _trust_tier(score) == "high"
+    assert "same_source_name_and_strong_address" in reasons or "address_term_match" in reasons
+
+
+def test_structured_facts_infers_cafe_keywords():
+    item = SearchResult(
+        source="블로그",
+        title="동탄 카페 후기",
+        url="https://blog.naver.com/cafe/1",
+        snippet="아메리카노 라떼 디저트 케이크가 있는 카페",
+        text_excerpt="아메리카노 라떼 디저트 케이크 " * 5,
+    )
+    facts = _extract_structured_facts(item)
+    assert facts["inferred_category"] == "카페"
+    assert "아메리카노" in facts["service_or_menu_mentions"]
+
+
+def test_structured_facts_infers_kids_cafe_keywords():
+    item = SearchResult(
+        source="블로그",
+        title="키즈카페 이용 후기",
+        url="https://blog.naver.com/kids/1",
+        snippet="입장료 보호자 놀이시설 파티룸 이용시간",
+        text_excerpt="입장료 보호자 놀이시설 파티룸 " * 5,
+    )
+    facts = _extract_structured_facts(item)
+    assert facts["inferred_category"] == "키즈카페"
+    assert "입장료" in facts["service_or_menu_mentions"]

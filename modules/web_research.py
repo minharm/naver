@@ -219,13 +219,47 @@ def _has_conflicting_region(text: str, address: str) -> bool:
     return True
 
 
-def _extract_structured_facts(item: SearchResult) -> dict[str, list[str]]:
+MENU_KEYWORDS_BY_CATEGORY = {
+    "중식": ["짜장", "짜장면", "짬뽕", "탕수육", "볶음밥", "마라", "냉짬뽕", "유린기", "깐풍기", "멘보샤", "코스", "세트"],
+    "카페": ["아메리카노", "라떼", "카푸치노", "에이드", "스무디", "디저트", "케이크", "베이커리", "크로플", "쿠키", "브런치"],
+    "고깃집": ["삼겹살", "목살", "갈비", "한우", "등심", "안심", "냉면", "된장찌개", "소고기", "돼지고기", "양념갈비"],
+    "키즈카페": ["입장료", "보호자", "놀이시설", "파티룸", "생일파티", "트램폴린", "볼풀", "정글짐", "주차", "이용시간"],
+    "병원": ["진료과목", "예약", "접수", "진료시간", "주차", "의사", "검진", "상담", "처방", "치료"],
+    "공방": ["원데이클래스", "체험", "예약", "수업", "클래스", "재료비", "작품", "공예", "도자기", "가죽"],
+    "숙박": ["객실", "체크인", "체크아웃", "조식", "주차", "예약", "수영장", "바베큐", "펜션", "호텔"],
+    "일반": ["예약", "주차", "영업시간", "가격", "서비스", "이용시간"],
+}
+
+
+def _infer_business_category(text: str) -> str:
+    text = text or ""
+    scores: dict[str, int] = {}
+    for category, keywords in MENU_KEYWORDS_BY_CATEGORY.items():
+        if category == "일반":
+            continue
+        scores[category] = sum(1 for keyword in keywords if keyword in text)
+    if not scores:
+        return "일반"
+    category, score = max(scores.items(), key=lambda kv: kv[1])
+    return category if score > 0 else "일반"
+
+
+def _extract_structured_facts(item: SearchResult) -> dict[str, Any]:
     text = f"{item.title}\n{item.snippet}\n{item.text_excerpt}"
     phones = sorted(set(re.findall(r"\b0\d{1,2}[-.\s]?\d{3,4}[-.\s]?\d{4}\b", text)))
-    hours = sorted(set(re.findall(r"(?:영업시간|운영시간|매일|평일|주말|브레이크타임)[^\\n]{0,60}", text)))
-    menu_keywords = ["짜장", "짬뽕", "탕수육", "볶음밥", "마라", "냉짬뽕", "코스", "세트", "커피", "라떼", "디저트"]
-    menus = sorted(set(k for k in menu_keywords if k in text))
-    return {"phone_numbers": phones, "hours_mentions": hours, "menu_mentions": menus}
+    hours = sorted(set(re.findall(r"(?:영업시간|운영시간|매일|평일|주말|브레이크타임|진료시간|체크인|체크아웃)[^\\n]{0,70}", text)))
+
+    category = _infer_business_category(text)
+    keywords = MENU_KEYWORDS_BY_CATEGORY.get(category, []) + MENU_KEYWORDS_BY_CATEGORY["일반"]
+    service_mentions = sorted(set(keyword for keyword in keywords if keyword in text))
+
+    return {
+        "inferred_category": category,
+        "phone_numbers": phones,
+        "hours_mentions": hours,
+        "service_or_menu_mentions": service_mentions,
+    }
+
 
 
 def _quality_score(item: SearchResult, business_name: str, address: str) -> tuple[int, list[str]]:
@@ -292,7 +326,7 @@ def _quality_score(item: SearchResult, business_name: str, address: str) -> tupl
         score += 5; reasons.append("phone_mention")
     if structured["hours_mentions"]:
         score += 5; reasons.append("hours_mention")
-    if structured["menu_mentions"]:
+    if structured["service_or_menu_mentions"]:
         score += 3; reasons.append("menu_mention")
 
     generic_title = any(k in (item.title or "").lower() for k in [k.lower() for k in BAD_TITLE_KEYWORDS])
@@ -302,15 +336,38 @@ def _quality_score(item: SearchResult, business_name: str, address: str) -> tupl
     return score, reasons
 
 
+def _trust_tier(score: int) -> str:
+    if score >= 70:
+        return "high"
+    if score >= 45:
+        return "medium"
+    if score >= 25:
+        return "low"
+    return "excluded"
+
+
+def _can_use_for_facts(score: int) -> bool:
+    return _trust_tier(score) == "high"
+
+
 def _quality_filter_results(results: list[SearchResult], business_name: str, address: str) -> tuple[list[SearchResult], list[dict[str, Any]]]:
     scored_rows: list[dict[str, Any]] = []
     for item in results:
         score, reasons = _quality_score(item, business_name, address)
-        scored_rows.append({"item": item, "quality_score": score, "quality_reasons": reasons})
+        scored_rows.append({
+            "item": item,
+            "quality_score": score,
+            "quality_reasons": reasons,
+            "trust_tier": _trust_tier(score),
+            "use_for_facts": _can_use_for_facts(score),
+        })
 
     scored_rows.sort(key=lambda r: r["quality_score"], reverse=True)
-    valid_rows = [r for r in scored_rows if r["quality_score"] >= 25]
-    selected = valid_rows if valid_rows else [r for r in scored_rows if r["quality_score"] > 0]
+    # Keep low/medium/high results for review, but only high-trust rows are
+    # considered safe enough for direct factual grounding.
+    selected = [r for r in scored_rows if r["trust_tier"] in {"high", "medium", "low"}]
+    if not selected:
+        selected = [r for r in scored_rows if r["quality_score"] > 0]
     return [r["item"] for r in selected], scored_rows
 
 
@@ -701,10 +758,16 @@ def research_business(
         score_info = valid_scores.get(item.url, {})
         row["quality_score"] = score_info.get("quality_score", 0)
         row["quality_reasons"] = score_info.get("quality_reasons", [])
+        row["trust_tier"] = score_info.get("trust_tier", _trust_tier(int(row["quality_score"])))
+        row["use_for_facts"] = bool(score_info.get("use_for_facts", _can_use_for_facts(int(row["quality_score"]))))
         row["structured_facts"] = _extract_structured_facts(item)
         results_as_dicts.append(row)
 
     valid_count = len([r for r in results_as_dicts if int(r.get("quality_score", 0)) >= 25])
+    high_trust_count = len([r for r in results_as_dicts if r.get("trust_tier") == "high"])
+    medium_trust_count = len([r for r in results_as_dicts if r.get("trust_tier") == "medium"])
+    low_trust_count = len([r for r in results_as_dicts if r.get("trust_tier") == "low"])
+    fact_usable_count = len([r for r in results_as_dicts if r.get("use_for_facts")])
     avg_quality = round(sum(int(r.get("quality_score", 0)) for r in results_as_dicts) / len(results_as_dicts), 1) if results_as_dicts else 0
 
     return {
@@ -714,8 +777,13 @@ def research_business(
         "raw_result_count": len(raw_results),
         "result_count": len(results_as_dicts),
         "valid_result_count": valid_count,
+        "high_trust_result_count": high_trust_count,
+        "medium_trust_result_count": medium_trust_count,
+        "low_trust_result_count": low_trust_count,
+        "fact_usable_result_count": fact_usable_count,
         "average_quality_score": avg_quality,
         "quality_threshold": 25,
+        "fact_usable_threshold": 70,
         "results": results_as_dicts,
         "structured_facts_by_source": [
             {
@@ -727,7 +795,7 @@ def research_business(
             for r in results_as_dicts
             if r.get("structured_facts", {}).get("phone_numbers")
             or r.get("structured_facts", {}).get("hours_mentions")
-            or r.get("structured_facts", {}).get("menu_mentions")
+            or r.get("structured_facts", {}).get("service_or_menu_mentions")
         ],
         "group_counts": {k: len(v) for k, v in grouped.items()},
     }
@@ -741,6 +809,10 @@ def _research_to_prompt(research_data: dict[str, Any]) -> str:
 [검색결과 {idx}]
 출처 유형: {item.get('domain_type', '')}
 수집 출처: {item.get('source', '')}
+신뢰등급: {item.get('trust_tier', '')}
+본문 사실 근거 사용 가능: {item.get('use_for_facts', False)}
+품질점수: {item.get('quality_score', '')}
+품질사유: {item.get('quality_reasons', [])}
 제목: {item.get('title', '')}
 URL: {item.get('url', '')}
 요약/스니펫: {item.get('snippet', '')}
@@ -799,6 +871,8 @@ def _build_business_web_search_prompt(research_data: dict[str, Any]) -> str:
 가장 중요한 규칙:
 - 사용자가 입력한 업체명과 주소에 해당하는 업체만 분석한다.
 - 검색 결과에 명확히 있는 내용만 verified_facts에 넣는다.
+- 단, verified_facts는 반드시 "본문 사실 근거 사용 가능: True"인 고신뢰 출처에서 확인된 내용만 넣는다.
+- 중신뢰/저신뢰 결과는 분위기 참고, 후기 소재 참고만 가능하며 사실 단정 근거로 쓰지 않는다.
 - 확실하지 않은 내용은 likely_facts_needing_check에 넣는다.
 - 주소, 전화번호, 영업시간, 메뉴, 가격은 출처가 있을 때만 적는다.
 - 블로그 후기에서 반복적으로 나오는 포인트를 review_insights에 정리한다.
@@ -891,6 +965,8 @@ def analyze_business_research(research_data: dict[str, Any], model: str | None =
 가장 중요한 규칙:
 - 사실과 추정, 후기 느낌을 반드시 구분한다.
 - 검색 결과에 명확히 있는 내용만 verified_facts에 넣는다.
+- 단, verified_facts는 반드시 "본문 사실 근거 사용 가능: True"인 고신뢰 출처에서 확인된 내용만 넣는다.
+- 중신뢰/저신뢰 결과는 분위기 참고, 후기 소재 참고만 가능하며 사실 단정 근거로 쓰지 않는다.
 - 확실하지 않은 내용은 likely_facts_needing_check에 넣는다.
 - 주소, 연락처, 영업시간, 서비스/제품명은 출처에 근거할 때만 적는다.
 - 블로그 글의 소재와 독자의 관심 포인트를 뽑는다.

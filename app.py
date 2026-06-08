@@ -49,14 +49,14 @@ from modules.project_manager import (
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 블로그 글 자동작성 v0.5.5",
+    page_title="네이버 블로그 글 자동작성 v0.5.6",
     page_icon="✍️",
     layout="wide",
 )
 
-st.title("✍️ 네이버 블로그 글 자동작성 v0.5.5")
+st.title("✍️ 네이버 블로그 글 자동작성 v0.5.6")
 st.caption(
-    "fact_guard 패턴, 업체 동일성 검증, 테스트 커버리지, 실행 검증 안내를 보강했습니다."
+    "safe context 우회 방지, 신뢰등급 분리, 업종별 메뉴/서비스 추출을 반영했습니다."
 )
 
 

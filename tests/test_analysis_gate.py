@@ -14,3 +14,11 @@ def test_business_analysis_reliable_with_source_results():
         {"source_results": [{"title": "a"}, {"title": "b"}]},
         {"valid_result_count": 0, "average_quality_score": 0},
     )
+
+
+def test_business_analysis_warning_when_no_high_trust_fact_source():
+    warning = business_analysis_warning(
+        {"summary": "분석 있음", "source_results": []},
+        {"valid_result_count": 2, "fact_usable_result_count": 0, "average_quality_score": 35},
+    )
+    assert "고신뢰 출처" in warning
