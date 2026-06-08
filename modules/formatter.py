@@ -24,6 +24,8 @@ def build_media_block(images: list[dict[str, Any]], videos: list[dict[str, Any]]
                 lines.append(f"  - 추천 위치: {position}")
             if processed.get("processed_image"):
                 lines.append(f"  - 가공 이미지 사용 가능: {processed.get('processed_image')}")
+            if item.get("is_reference_generated"):
+                lines.append("  - 보완 이미지: 업로드에 없던 장면을 공개 자료 참고로 추가 생성")
             if overlay_caption:
                 lines.append(f"  - 이미지 자막/라벨: {overlay_caption}")
     if videos:

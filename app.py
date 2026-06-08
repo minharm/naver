@@ -35,7 +35,6 @@ from modules.llm_client import validate_openai_settings
 from modules.web_research import analyze_business_research, research_business
 from modules.analysis_gate import business_analysis_warning
 from modules.post_quality import evaluate_blog_post, quality_report_to_markdown
-from modules.cost_control import get_cost_settings, make_metadata_only_image_analysis
 from modules.project_manager import (
     list_projects,
     save_project_snapshot,
@@ -48,14 +47,14 @@ from modules.project_manager import (
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 블로그 글 자동작성 v0.5.8-no-image-ai-quality",
+    page_title="네이버 블로그 글 자동작성 v0.5.9-no-image-ai-resize-only",
     page_icon="✍️",
     layout="wide",
 )
 
-st.title("✍️ 네이버 블로그 글 자동작성 v0.5.8-no-image-ai-quality")
+st.title("✍️ 네이버 블로그 글 자동작성 v0.5.9-no-image-ai-resize-only")
 st.caption(
-    "이미지 생성/가공 없이, 토큰 절약 모드와 최종 글 품질 평가 기능을 추가했습니다."
+    "이미지 생성/가공 없이, 이미지 분석용 리사이즈 1024px와 최종 글 품질 평가 기능을 유지합니다."
 )
 
 
@@ -223,17 +222,7 @@ with st.sidebar:
     with st.expander("모델 설정 확인", expanded=False):
         st.caption(f"텍스트/멀티모달 모델: {model}")
         st.caption("모델은 .env에서만 수정합니다. 일반 화면에서는 선택하지 않습니다.")
-
-    default_token_save = os.getenv("TOKEN_SAVE_MODE", "1").strip() not in {"0", "false", "False", "OFF", "off"}
-    token_save_mode = st.checkbox("토큰 절약 모드", value=default_token_save)
-    st.session_state["token_save_mode"] = token_save_mode
-    cost_settings = get_cost_settings(token_save_mode)
-    with st.expander("토큰 절약 설정", expanded=False):
-        st.caption(f"검색 출처 전달: 최대 {cost_settings['max_research_sources_for_generation']}개")
-        st.caption(f"이미지 AI 분석: 최대 {cost_settings['max_image_analysis']}장")
-        st.caption(f"분석용 이미지 긴 변: {cost_settings['analysis_image_max_long_side']}px")
-        st.caption(f"검색 excerpt: 최대 {cost_settings['max_source_excerpt_chars']}자")
-        st.caption(f"STEP 4 미디어 문맥: 최대 {cost_settings['max_media_context_items']}개")
+        st.caption("이미지 분석용 파일은 자동으로 긴 변 1024px 이하로 축소해 전송합니다.")
     st.caption(".env의 OPENAI_API_KEY가 필요합니다.")
     st.caption("이미지/영상 분석은 OPENAI_MODEL을 사용합니다. 이미지 생성/가공 기능은 제거했습니다.")
 
@@ -606,13 +595,7 @@ if selected_step == step_options[2]:
     st.header("진행 3번. 업로드 이미지/영상 분석 + 영상 자막 기획")
     st.caption("이미지는 AI가 직접 보고 블로그용 설명만 만듭니다. 이미지 생성/가공은 하지 않습니다. 영상은 프레임 분석 후 블로그 설명과 선택 자막 초안을 만듭니다.")
 
-    cost_settings = get_cost_settings(st.session_state.get("token_save_mode", True))
-    if cost_settings["token_save_mode"]:
-        st.info(
-            f"토큰 절약 모드 ON: 이미지 AI 분석은 최대 {cost_settings['max_image_analysis']}장까지 실행하고, "
-            f"분석용 이미지는 긴 변 {cost_settings['analysis_image_max_long_side']}px로 축소합니다. "
-            "초과 이미지는 원본 파일은 보관하되 간단 설명 기반으로만 등록합니다."
-        )
+    st.info("이미지 분석용 파일은 원본을 그대로 쓰지 않고, 긴 변 1024px 이하 JPG로 자동 축소해 AI 분석에 사용합니다. 원본 업로드 파일은 그대로 보관됩니다.")
 
     with st.form("media_form"):
         st.subheader("이미지 업로드")
@@ -636,25 +619,17 @@ if selected_step == step_options[2]:
         else:
             try:
                 if image_files:
-                    max_image_analysis = int(cost_settings["max_image_analysis"])
                     with st.spinner("이미지를 AI로 분석하고 있습니다..."):
                         for idx, file in enumerate(image_files, start=1):
                             path = save_uploaded_file(file, UPLOAD_IMAGE_DIR)
                             desc = image_desc_lines[idx - 1] if idx - 1 < len(image_desc_lines) else ""
-                            if idx <= max_image_analysis:
-                                analysis = analyze_image_file(
-                                    Path(path),
-                                    manual_description=desc,
-                                    model=model,
-                                    resize_for_analysis=bool(cost_settings["resize_images_for_analysis"]),
-                                    max_long_side=int(cost_settings["analysis_image_max_long_side"]),
-                                )
-                            else:
-                                analysis = make_metadata_only_image_analysis(
-                                    filename=path.name,
-                                    description=desc,
-                                    reason=f"토큰 절약 모드: {max_image_analysis}장 초과 이미지는 AI 비전 분석 생략",
-                                )
+                            analysis = analyze_image_file(
+                                Path(path),
+                                manual_description=desc,
+                                model=model,
+                                resize_for_analysis=True,
+                                max_long_side=1024,
+                            )
                             images_result.append({
                                 "filename": path.name,
                                 "saved_path": to_relative_path(path),
@@ -824,7 +799,6 @@ if selected_step == step_options[3]:
                         research_analysis=st.session_state.get("business_analysis", {}),
                         research_sources=research.get("results", []),
                         user_experience_note=st.session_state.get("user_experience_note", ""),
-                        token_save_mode=st.session_state.get("token_save_mode", True),
                         model=model,
                     )
                     st.session_state["generated_post"] = post

@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import base64
 import os
 from pathlib import Path
 from typing import Any
 
-import requests
 from openai import OpenAI
 
 
@@ -63,13 +61,6 @@ def _selected_model(model: str | None = None) -> str:
     return selected_model
 
 
-def _selected_image_model(model: str | None = None) -> str:
-    selected_model = (model or os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")).strip()
-    if not selected_model:
-        selected_model = "gpt-image-1"
-    if _has_non_ascii(selected_model):
-        raise RuntimeError("이미지 모델명에 한글/특수문자가 포함되어 있습니다. 예: gpt-image-1")
-    return selected_model
 
 
 def _extract_output_text(response: Any) -> str:
@@ -91,10 +82,6 @@ def _friendly_openai_error(exc: Exception, selected_model: str) -> RuntimeError:
         return RuntimeError("OpenAI API 키가 올바르지 않습니다. .env의 OPENAI_API_KEY를 다시 확인하세요.")
     if "model" in msg.lower() and ("not found" in msg.lower() or "does not exist" in msg.lower()):
         return RuntimeError(f"사용할 수 없는 모델명입니다: {selected_model}")
-    if "image" in msg.lower() and "model" in msg.lower():
-        return RuntimeError(
-            f"이미지 처리를 지원하지 않는 모델일 수 있습니다: {selected_model}. OPENAI_IMAGE_MODEL을 확인하세요."
-        )
     return RuntimeError(f"AI 호출 중 오류가 발생했습니다: {msg}")
 
 
@@ -171,62 +158,3 @@ def ask_ai_multimodal(
         raise _friendly_openai_error(exc, selected_model) from exc
 
     return _extract_output_text(response)
-
-
-def _extract_image_bytes(image_response: Any) -> bytes:
-    data_items = getattr(image_response, "data", None)
-    if data_items is None and isinstance(image_response, dict):
-        data_items = image_response.get("data")
-    if not data_items:
-        raise RuntimeError("이미지 응답 데이터가 비어 있습니다.")
-
-    first = data_items[0]
-    b64_value = getattr(first, "b64_json", None)
-    if b64_value is None and isinstance(first, dict):
-        b64_value = first.get("b64_json")
-    if b64_value:
-        return base64.b64decode(b64_value)
-
-    url_value = getattr(first, "url", None)
-    if url_value is None and isinstance(first, dict):
-        url_value = first.get("url")
-    if url_value:
-        resp = requests.get(url_value, timeout=30)
-        resp.raise_for_status()
-        return resp.content
-
-    raise RuntimeError("이미지 응답에서 결과 이미지를 추출하지 못했습니다.")
-
-
-def edit_image_with_ai(
-    input_path: str | Path,
-    prompt: str,
-    output_path: str | Path,
-    image_model: str | None = None,
-    size: str = "1024x1024",
-) -> Path:
-    """Edit a user image into a blog-ready image.
-
-    This uses the OpenAI Images API. If the account/model does not support image editing,
-    a user-friendly RuntimeError is raised.
-    """
-    client = get_openai_client()
-    selected_model = _selected_image_model(image_model)
-    input_path = Path(input_path)
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        with input_path.open("rb") as image_file:
-            response = client.images.edit(
-                model=selected_model,
-                image=image_file,
-                prompt=prompt,
-                size=size,
-            )
-    except Exception as exc:  # noqa: BLE001
-        raise _friendly_openai_error(exc, selected_model) from exc
-
-    image_bytes = _extract_image_bytes(response)
-    output_path.write_bytes(image_bytes)
-    return output_path

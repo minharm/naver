@@ -7,8 +7,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .llm_client import ask_ai, ask_ai_multimodal, edit_image_with_ai
-from .storage import PROCESSED_IMAGE_DIR, resolve_path, to_relative_path
+from .llm_client import ask_ai, ask_ai_multimodal
+from .storage import ANALYSIS_IMAGE_DIR, resolve_path, to_relative_path
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -28,8 +28,42 @@ def file_to_data_url(path: Path) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
-def analyze_image_file(path: Path, manual_description: str = "", model: str | None = None) -> dict[str, Any]:
-    data_url = file_to_data_url(path)
+def make_analysis_image(path: Path, max_long_side: int = 1024) -> Path:
+    """Create a smaller JPG for AI image analysis to reduce image-token cost."""
+    path = resolve_path(path)
+    ANALYSIS_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = ANALYSIS_IMAGE_DIR / f"{path.stem}_analysis.jpg"
+
+    try:
+        import cv2  # type: ignore
+    except Exception:
+        return path
+
+    image = cv2.imread(str(path))
+    if image is None:
+        return path
+
+    height, width = image.shape[:2]
+    long_side = max(height, width)
+    if long_side > max_long_side:
+        scale = max_long_side / float(long_side)
+        width = max(1, int(width * scale))
+        height = max(1, int(height * scale))
+        image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+
+    cv2.imwrite(str(output_path), image, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+    return output_path
+
+
+def analyze_image_file(
+    path: Path,
+    manual_description: str = "",
+    model: str | None = None,
+    resize_for_analysis: bool = True,
+    max_long_side: int = 1024,
+) -> dict[str, Any]:
+    analysis_path = make_analysis_image(path, max_long_side=max_long_side) if resize_for_analysis else path
+    data_url = file_to_data_url(analysis_path)
     prompt = f"""
 너는 네이버 블로그 글 작성을 위한 사진 분석가다.
 첨부 이미지를 보고 블로그 본문에 사용할 수 있는 설명만 정리해라.
@@ -138,68 +172,6 @@ def analyze_video_file(path: Path, manual_description: str = "", model: str | No
 }}
 """.strip()
     return _extract_json(ask_ai_multimodal(prompt, frame_urls, model=model, temperature=0.2))
-
-
-def plan_image_processing(
-    image_analysis: dict[str, Any],
-    style_profile: dict[str, Any],
-    business_analysis: dict[str, Any],
-    overlay_caption: bool = True,
-    overlay_style: str = "정보형",
-    model: str | None = None,
-) -> dict[str, Any]:
-    prompt = f"""
-너는 블로그용 이미지 가공 기획자다.
-사용자의 블로그 문체/분위기와 업체 분석, 그리고 현재 이미지 분석 결과를 바탕으로
-'블로그에 넣기 좋은 가공 이미지'를 만들기 위한 편집 계획을 JSON으로 작성하라.
-
-중요 규칙:
-- 이미지에 없는 사실을 새로 추가하라고 하면 안 된다.
-- 실제 사진의 핵심 피사체는 유지한다.
-- 색감, 밝기, 선명도, 정리, 구도 보정 위주로 제안한다.
-- overlay_caption이 true이면 이미지 안에 넣을 짧은 자막/라벨 문구를 1개 제안한다.
-- 과장 광고 문구는 피하고, 블로그 글에 어울리는 자연스러운 표현을 사용한다.
-- 결과는 반드시 JSON만 출력한다.
-
-입력:
-style_profile={json.dumps(style_profile, ensure_ascii=False)}
-business_analysis={json.dumps(business_analysis, ensure_ascii=False)}
-image_analysis={json.dumps(image_analysis, ensure_ascii=False)}
-overlay_caption={str(overlay_caption).lower()}
-overlay_style={overlay_style}
-
-출력 JSON 스키마:
-{{
-  "editing_goal": "",
-  "suggested_crop": "",
-  "color_tone": "",
-  "overlay_caption": "",
-  "overlay_position": "상단/하단/좌측상단/우측상단/없음",
-  "overlay_style_note": "",
-  "edit_prompt": "OpenAI 이미지 편집 API에 넣을 구체적인 한국어 프롬프트"
-}}
-""".strip()
-    return _extract_json(ask_ai(prompt, model=model, temperature=0.2))
-
-
-def process_image_for_blog(
-    source_image_path: str | Path,
-    processing_plan: dict[str, Any],
-    image_model: str | None = None,
-) -> dict[str, Any]:
-    source_image_path = resolve_path(source_image_path)
-    output_name = source_image_path.stem + "_processed.png"
-    output_path = PROCESSED_IMAGE_DIR / output_name
-    edit_prompt = processing_plan.get("edit_prompt", "")
-    if not edit_prompt:
-        raise RuntimeError("이미지 편집 프롬프트가 비어 있습니다.")
-    edited_path = edit_image_with_ai(source_image_path, edit_prompt, output_path, image_model=image_model)
-    return {
-        "source_image": to_relative_path(source_image_path),
-        "processed_image": to_relative_path(edited_path),
-        "processing_plan": processing_plan,
-        "overlay_caption": processing_plan.get("overlay_caption", ""),
-    }
 
 
 def plan_video_caption(

@@ -1,4 +1,36 @@
-# 네이버 블로그 글 자동작성 v0.5.8-no-image-ai-quality
+# 네이버 블로그 글 자동작성 v0.5.9-no-image-ai-resize-only
+
+## v0.5.9-no-image-ai-resize-only 수정 사항
+
+### 토큰 절약 모드 제거
+
+사이드바의 `토큰 절약 모드`와 관련 설정을 제거했습니다.
+
+제거한 항목:
+
+- 토큰 절약 모드 체크박스
+- 토큰 절약 설정 UI
+- 이미지 AI 분석 최대 장수 제한
+- 6장 초과 이미지 분석 생략
+- style_profile compact 강제 사용
+- research_analysis compact 강제 사용
+- TOKEN_SAVE_MODE 관련 .env 설정
+
+### 분석용 이미지 1024px 리사이즈만 유지
+
+이미지 분석 시에는 원본을 그대로 OpenAI에 보내지 않고, 분석용 축소본을 만들어 사용합니다.
+
+기준:
+
+```text
+긴 변 1024px 이하
+JPG 변환
+원본 파일은 uploads/images/에 그대로 보관
+분석용 파일은 output/analysis_images/에 저장
+```
+
+즉, 토큰 절약 모드는 없애되 **이미지 분석용 리사이즈 1024px만 기본 적용**합니다.
+
 
 ## v0.5.8-no-image-ai-quality 수정 사항
 
@@ -41,46 +73,6 @@ STEP 4에서 글을 생성한 뒤 `품질 평가` 탭이 추가됩니다.
 
 이 기능은 추가 LLM 호출 없이 규칙 기반으로 실행되므로 토큰 비용이 들지 않습니다.
 
-
-## v0.5.7-no-image-ai-token-save 수정 사항
-
-### 토큰 절약 모드 추가
-
-이미지 AI 생성/가공 기능은 계속 제거된 상태에서, API 토큰비를 줄이는 절약 모드를 추가했습니다.
-
-사이드바에 `토큰 절약 모드`가 생기며 기본값은 ON입니다.
-
-절약 모드 ON 기준:
-
-- STEP 4 글 생성에 넘기는 검색 출처: 최대 5개
-- 검색 excerpt: 450자 이하로 축약
-- 스타일 프로필: compact 요약본만 사용
-- 업체 분석 자료: 핵심 항목만 compact 요약
-- 이미지 AI 분석: 최대 6장
-- 분석용 이미지: 긴 변 1024px 이하 JPG로 축소
-- 6장 초과 이미지는 원본 파일은 보관하되 AI 비전 분석 생략
-- STEP 4 미디어 문맥: 최대 12개만 프롬프트에 전달
-
-### 이미지 원본 보존 + 분석용 축소본 사용
-
-원본 업로드 파일은 그대로 보관하고, AI 분석에는 축소 이미지를 사용합니다.
-
-```text
-uploads/images/original.jpg
-output/analysis_images/original_analysis.jpg
-```
-
-### 환경변수 설정
-
-`.env`에서 기본값을 조절할 수 있습니다.
-
-```env
-TOKEN_SAVE_MODE=1
-TOKEN_SAVE_MAX_RESEARCH_SOURCES=5
-TOKEN_SAVE_SOURCE_EXCERPT_CHARS=450
-TOKEN_SAVE_MAX_IMAGE_ANALYSIS=6
-TOKEN_SAVE_ANALYSIS_IMAGE_MAX_LONG_SIDE=1024
-```
 
 
 ## v0.5.6-no-image-ai 수정 사항
