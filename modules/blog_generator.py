@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from .formatter import build_media_block
+from .fact_guard import sanitize_unverified_experience_claims
 from .llm_client import ask_ai
 
 
@@ -101,6 +102,11 @@ def generate_blog_post(
 """.strip()
 
     text = ask_ai(prompt, model=model, temperature=0.72)
+    text = normalize_generated_post(text)
+    text, warnings = sanitize_unverified_experience_claims(text, user_experience_note=user_experience_note)
+    if warnings:
+        text += "\n\n[작성 안전 점검]\n"
+        text += "- 직접 경험 메모가 없어 실제 방문/주문/맛/친절도/아이 반응처럼 보이는 표현을 자동 완화했습니다.\n"
     return normalize_generated_post(text)
 
 

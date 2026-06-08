@@ -1,4 +1,97 @@
-# 네이버 블로그 글 자동작성 v0.5.2
+# 네이버 블로그 글 자동작성 v0.5.4
+
+## v0.5.4 수정 사항
+
+### pytest import 오류 수정
+
+Windows/VS Code/가상환경에서 `pytest` 실행 시 아래 오류가 발생할 수 있었습니다.
+
+```text
+ModuleNotFoundError: No module named 'modules'
+ModuleNotFoundError: No module named 'package_release'
+```
+
+원인:
+- pytest가 테스트를 수집할 때 프로젝트 루트를 `sys.path`에 넣지 못하는 환경이 있습니다.
+- 이 경우 `modules/` 패키지와 `package_release.py`를 테스트에서 import하지 못합니다.
+
+수정:
+- `tests/conftest.py` 추가
+- 테스트 실행 시 프로젝트 루트를 `sys.path`에 자동 추가
+
+실행:
+
+```powershell
+pytest
+```
+
+또는 더 확실하게:
+
+```powershell
+python -m pytest
+```
+
+
+## v0.5.3 수정 사항
+
+### 실제 코드 검증 강화
+
+README에 적힌 개선 내용이 실제 코드에 반영되어 있는지 확인할 수 있도록 테스트를 보강했습니다.
+
+추가 테스트:
+
+- 검색 결과 품질 점수/잡링크 제외 테스트
+- 허위 후기성 표현 후처리 테스트
+- 프로젝트 저장/불러오기 및 이미지 상대경로 테스트
+- 업로드 패키지 생성 테스트
+- clean ZIP 패키징 제외 규칙 테스트
+
+### GitHub Actions 추가
+
+`.github/workflows/test.yml`을 추가했습니다.
+
+이제 GitHub에 push하면 다음 검증을 자동 실행할 수 있습니다.
+
+- `pip install -r requirements.txt`
+- `pytest`
+- `python package_release.py`
+
+### 허위 후기 방지 후처리 추가
+
+`modules/fact_guard.py`를 추가했습니다.
+
+직접 경험 메모가 비어 있을 때 생성 글에 아래와 같은 표현이 들어가면 삭제하거나 완화합니다.
+
+- 다녀왔다
+- 먹어봤다
+- 주문했다
+- 아이들이 잘 먹었다
+- 직원이 친절했다
+- 주차가 편했다
+- 가성비가 좋다
+- 대표 메뉴다
+- 맛있었다
+
+### 자동 발행/자동 업로드 포지션 제거
+
+이 프로젝트는 앞으로 **네이버 블로그 자동 발행 프로그램이 아니라, 글 생성 + 수동 업로드 보조 프로그램**으로 유지합니다.
+
+유지하는 기능:
+
+- 블로그 스타일 학습
+- 업체명/주소 기반 사실 조사
+- 이미지/영상 분석
+- 모바일 기준 블로그 글 생성
+- 네이버 업로드용 텍스트/이미지 순서 안내
+- 수동 업로드 패키지 생성
+
+하지 않는 기능:
+
+- 네이버 자동 로그인
+- 네이버 자동 발행
+- Playwright 기반 SmartEditor 자동 입력
+- 브라우저 세션 저장
+
 
 ## v0.5.2 수정 사항
 
@@ -125,12 +218,20 @@ output/processed_images/sample_processed.png
 
 절대경로가 저장되어 다른 PC에서 깨지는 문제를 줄였습니다.
 
-## 7. 테스트 코드 추가
+## 7. 테스트 코드 및 CI 추가
 
 기본 테스트 파일을 추가했습니다.
 
 ```text
 tests/test_parsers_and_quality.py
+
+tests/test_fact_guard.py
+
+tests/test_project_and_paths.py
+
+tests/test_package_release.py
+
+tests/test_upload_package.py
 ```
 
 실행:
@@ -179,6 +280,7 @@ README.md
 package_release.py
 run_localhost_5173.bat
 cleanup_sensitive_files.bat
+.github/workflows/test.yml
 .streamlit/config.toml
 ```
 
