@@ -10,7 +10,7 @@ sys.modules.setdefault("openai", fake_openai)
 
 from modules.blog_generator import normalize_generated_post, split_generated_post
 from modules.post_exporter import parse_index_spec, parse_body_segments
-from modules.web_research import SearchResult, _quality_score
+from modules.web_research import SearchResult, _quality_score, analyze_business_research
 
 
 def test_parse_index_spec_ranges_and_unique():
@@ -53,3 +53,49 @@ def test_quality_score_accepts_relevant_blog():
     score, reasons = _quality_score(item, "후이후이", "경기도 수원시 영통구 덕영대로 1566")
     assert score >= 25
     assert "business_name_match" in reasons
+
+
+def test_quality_score_caps_blog_name_only_without_region():
+    item = SearchResult(
+        source="네이버 블로그",
+        title="후이후이 맛집 후기",
+        url="https://blog.naver.com/example/456",
+        snippet="후이후이 메뉴가 다양하다는 글",
+        text_excerpt="후이후이 " * 50,
+    )
+    score, reasons = _quality_score(item, "후이후이", "경기도 수원시 영통구 덕영대로 1566")
+    assert score <= 55
+    assert "name_only_score_cap" in reasons or "blog_name_only_score_cap" in reasons
+
+
+def test_quality_score_penalizes_conflicting_region():
+    item = SearchResult(
+        source="네이버 블로그",
+        title="부산 후이후이 방문 후기",
+        url="https://blog.naver.com/example/789",
+        snippet="후이후이 부산광역시 해운대구 우동 방문 후기",
+        text_excerpt="후이후이 부산광역시 해운대구 우동 " * 10,
+    )
+    score, reasons = _quality_score(item, "후이후이", "경기도 수원시 영통구 덕영대로 1566")
+    assert "conflicting_region_penalty" in reasons
+    assert score < 25
+
+
+def test_analyze_business_research_falls_back_when_web_fails_and_quality_low(monkeypatch):
+    import modules.web_research as wr
+
+    def fake_web(*args, **kwargs):
+        raise RuntimeError("web failed")
+
+    monkeypatch.setattr(wr, "ask_ai_with_web_search", fake_web)
+    result = analyze_business_research(
+        {
+            "business_name": "후이후이",
+            "address": "경기도 수원시 영통구 덕영대로 1566",
+            "results": [{"title": "NAVER", "url": "https://www.naver.com"}],
+            "valid_result_count": 0,
+            "average_quality_score": 0,
+        }
+    )
+    assert "검색 결과가 충분하지 않습니다" in result["summary"]
+    assert result["source_results"] == []

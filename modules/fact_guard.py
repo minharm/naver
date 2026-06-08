@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable
 
 
 DIRECT_EXPERIENCE_PATTERNS = [
@@ -13,7 +12,18 @@ DIRECT_EXPERIENCE_PATTERNS = [
     r"아이들이\s*잘\s*먹",
     r"아이들도\s*잘\s*먹",
     r"직원(?:분)?들?도?\s*친절",
+    r"사장님(?:이|도)?\s*친절",
     r"친절했(?:습니다|어요|다)?",
+    r"또\s*가고\s*싶",
+    r"재방문\s*의사",
+    r"다시\s*방문(?:하고|할)\s*의사",
+    r"입맛에\s*잘\s*맞",
+    r"제\s*입맛에\s*맞",
+    r"양이\s*푸짐",
+    r"푸짐해서\s*만족",
+    r"가격\s*대비\s*(?:괜찮|좋)",
+    r"웨이팅\s*없이\s*편",
+    r"기다림\s*없이\s*편",
     r"주차\s*공간이\s*넉넉",
     r"주차(?:도)?\s*편",
     r"가성비(?:가)?\s*좋",
@@ -28,6 +38,7 @@ OBSERVATION_PREFIXES = (
     "메뉴 사진에서 보이는 구성은",
     "검색 자료 기준으로는",
     "공개 자료 기준으로는",
+    "확인된 자료 기준으로는",
 )
 
 
@@ -35,7 +46,7 @@ def has_direct_experience_note(user_experience_note: str | None) -> bool:
     note = (user_experience_note or "").strip()
     if not note:
         return False
-    empty_markers = ["없음", "없다", "무", "x", "X", "모름"]
+    empty_markers = ["없음", "없다", "무", "x", "X", "모름", "미입력"]
     return note not in empty_markers and len(note) >= 5
 
 
@@ -52,12 +63,7 @@ def _line_has_safe_context(line: str) -> bool:
 
 
 def sanitize_unverified_experience_claims(text: str, user_experience_note: str | None = "") -> tuple[str, list[str]]:
-    """Remove or soften risky first-person/experience claims when no direct note exists.
-
-    This is a deterministic post-generation safety net. It does not try to make
-    the writing beautiful; it prevents accidental false reviews such as
-    "아이들도 잘 먹었어요" when the user never provided that experience.
-    """
+    """Remove or soften risky first-person/experience claims when no direct note exists."""
     text = text or ""
     if has_direct_experience_note(user_experience_note):
         return text, []
@@ -67,10 +73,20 @@ def sanitize_unverified_experience_claims(text: str, user_experience_note: str |
 
     replacements = [
         (r"저희\s*가족은", "방문객 입장에서는"),
-        (r"아이들이\s*잘\s*먹(?:었습니다|었어요|었다|더라고요|더라구요)?", "아이 동반 방문 시에도 메뉴 구성을 확인해보면 좋겠습니다"),
-        (r"아이들도\s*잘\s*먹(?:었습니다|었어요|었다|더라고요|더라구요)?", "아이 동반 방문 시에도 메뉴 구성을 확인해보면 좋겠습니다"),
-        (r"직원(?:분)?들?도?\s*친절(?:했습니다|했어요|했다|해서)?", "직원 응대는 방문 전후 실제 후기로 확인하면 좋겠습니다"),
+        (r"아이들이\s*잘\s*먹(?:었습니다|었어요|었다|더라고요|더라구요)?", "아이 동반 방문 시에는 메뉴 구성을 확인해보면 좋겠습니다"),
+        (r"아이들도\s*잘\s*먹(?:었습니다|었어요|었다|더라고요|더라구요)?", "아이 동반 방문 시에는 메뉴 구성을 확인해보면 좋겠습니다"),
+        (r"직원(?:분)?들?도?\s*친절(?:했습니다|했어요|했다|해서)?", "직원 응대는 실제 방문 후기로 확인하면 좋겠습니다"),
+        (r"사장님(?:이|도)?\s*친절(?:했습니다|했어요|했다|해서)?", "응대 관련 부분은 실제 방문 후기로 확인하면 좋겠습니다"),
         (r"친절했(?:습니다|어요|다)?", "응대 관련 부분은 실제 방문 후기로 확인하면 좋겠습니다"),
+        (r"또\s*가고\s*싶(?:은|다|네요|었습니다|었어요)?", "재방문 만족도는 실제 방문 후기로 확인하면 좋겠습니다"),
+        (r"재방문\s*의사(?:가)?\s*(?:있|있음|있습니다|있어요)", "재방문 의사는 실제 방문 후기로 확인하면 좋겠습니다"),
+        (r"다시\s*방문(?:하고|할)\s*의사(?:가)?\s*(?:있|있음|있습니다|있어요)", "재방문 의사는 실제 방문 후기로 확인하면 좋겠습니다"),
+        (r"(?:제\s*)?입맛에\s*잘\s*맞(?:았습니다|았어요|다|고)?", "맛에 대한 평가는 실제 방문 후기를 참고하면 좋겠습니다"),
+        (r"양이\s*푸짐(?:했습니다|했어요|하다|해서)?", "양과 구성은 메뉴 사진과 실제 주문 시점에 따라 확인이 필요합니다"),
+        (r"푸짐해서\s*만족(?:했습니다|했어요|했다)?", "양과 만족도는 실제 방문 후기를 참고하면 좋겠습니다"),
+        (r"가격\s*대비\s*(?:괜찮|좋)(?:았습니다|았어요|다|은)?", "가격 만족도는 메뉴와 방문 시점에 따라 확인이 필요합니다"),
+        (r"웨이팅\s*없이\s*편(?:했습니다|했어요|하다|하게)?", "대기 여부는 방문 시간대에 따라 달라질 수 있어 확인이 필요합니다"),
+        (r"기다림\s*없이\s*편(?:했습니다|했어요|하다|하게)?", "대기 여부는 방문 시간대에 따라 달라질 수 있어 확인이 필요합니다"),
         (r"주차\s*공간이\s*넉넉(?:했습니다|했어요|하다|해서)?", "주차 가능 여부는 방문 전 확인하면 좋겠습니다"),
         (r"주차(?:도)?\s*편(?:했습니다|했어요|하다|해서)?", "주차 편의성은 방문 전 확인하면 좋겠습니다"),
         (r"가성비(?:가)?\s*좋(?:았습니다|았어요|다|은)?", "가격 만족도는 메뉴와 방문 시점에 따라 확인이 필요합니다"),
@@ -86,7 +102,6 @@ def sanitize_unverified_experience_claims(text: str, user_experience_note: str |
             continue
 
         original = line
-        # Remove first-person visit/order claims entirely when they are not supported.
         if re.search(r"다녀왔(?:습니다|어요|다|는데|더니)?|방문했(?:습니다|어요|다|는데)?|먹어봤(?:습니다|어요|다|는데)?|주문했(?:습니다|어요|다|는데)?", line):
             warnings.append(original.strip())
             continue

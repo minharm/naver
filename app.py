@@ -36,6 +36,7 @@ from modules.storage import (
 from modules.style_analyzer import analyze_style
 from modules.llm_client import validate_openai_settings
 from modules.web_research import analyze_business_research, research_business
+from modules.analysis_gate import business_analysis_warning
 from modules.project_manager import (
     list_projects,
     save_project_snapshot,
@@ -48,14 +49,14 @@ from modules.project_manager import (
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 블로그 글 자동작성 v0.5.2",
+    page_title="네이버 블로그 글 자동작성 v0.5.5",
     page_icon="✍️",
     layout="wide",
 )
 
-st.title("✍️ 네이버 블로그 글 자동작성 v0.5.2")
+st.title("✍️ 네이버 블로그 글 자동작성 v0.5.5")
 st.caption(
-    "저장된 스타일 프로필 불러오기 후 STEP 2로 바로 이동하도록 수정했습니다."
+    "fact_guard 패턴, 업체 동일성 검증, 테스트 커버리지, 실행 검증 안내를 보강했습니다."
 )
 
 
@@ -789,6 +790,13 @@ if selected_step == step_options[3]:
     st.caption("생성된 글은 네이버 블로그에 바로 복사해서 붙여넣을 수 있는 형식으로 출력합니다.")
 
     current_info = st.session_state.get("business_info", {}) or {}
+    source_warning = business_analysis_warning(
+        st.session_state.get("business_analysis", {}),
+        st.session_state.get("business_research", {}),
+    )
+    if source_warning:
+        st.warning(source_warning)
+
     with st.form("generate_form"):
         g1, g2 = st.columns(2)
         with g1:

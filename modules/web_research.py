@@ -167,35 +167,133 @@ def _is_bad_result(item: SearchResult) -> bool:
     return False
 
 
+def _target_region_terms(address: str) -> dict[str, set[str]]:
+    text = _clean_text(address)
+    cities = set(re.findall(r"([가-힣]+시)", text))
+    districts = set(re.findall(r"([가-힣]+구)", text))
+    dongs = set(re.findall(r"([가-힣]+동)", text))
+    roads = set()
+    for m in re.finditer(r"([가-힣]+로)\s*(\d+)", text):
+        roads.add(m.group(1))
+        roads.add(f"{m.group(1)} {m.group(2)}")
+    return {"city": cities, "district": districts, "dong": dongs, "road": roads}
+
+
+def _region_match_level(text: str, address: str) -> tuple[str, list[str]]:
+    text_l = _clean_text(text).lower()
+    terms = _target_region_terms(address)
+    matched: list[str] = []
+
+    road_matches = [x.lower() for x in terms["road"] if x.lower() in text_l]
+    district_matches = [x.lower() for x in terms["district"] if x.lower() in text_l]
+    city_matches = [x.lower() for x in terms["city"] if x.lower() in text_l]
+    dong_matches = [x.lower() for x in terms["dong"] if x.lower() in text_l]
+
+    matched.extend(road_matches + district_matches + city_matches + dong_matches)
+
+    if road_matches and (district_matches or city_matches):
+        return "strong", matched
+    if road_matches or (district_matches and city_matches):
+        return "medium", matched
+    if city_matches or district_matches or dong_matches:
+        return "weak", matched
+    return "none", []
+
+
+def _has_conflicting_region(text: str, address: str) -> bool:
+    """Detect obvious other-region results.
+
+    Conservative: only treat as conflict when the target city is missing and
+    another city is explicitly present.
+    """
+    text_clean = _clean_text(text)
+    target = _target_region_terms(address)
+    target_cities = target["city"]
+    if not target_cities:
+        return False
+    mentioned_cities = set(re.findall(r"([가-힣]+시)", text_clean))
+    if not mentioned_cities:
+        return False
+    if target_cities & mentioned_cities:
+        return False
+    return True
+
+
+def _extract_structured_facts(item: SearchResult) -> dict[str, list[str]]:
+    text = f"{item.title}\n{item.snippet}\n{item.text_excerpt}"
+    phones = sorted(set(re.findall(r"\b0\d{1,2}[-.\s]?\d{3,4}[-.\s]?\d{4}\b", text)))
+    hours = sorted(set(re.findall(r"(?:영업시간|운영시간|매일|평일|주말|브레이크타임)[^\\n]{0,60}", text)))
+    menu_keywords = ["짜장", "짬뽕", "탕수육", "볶음밥", "마라", "냉짬뽕", "코스", "세트", "커피", "라떼", "디저트"]
+    menus = sorted(set(k for k in menu_keywords if k in text))
+    return {"phone_numbers": phones, "hours_mentions": hours, "menu_mentions": menus}
+
+
 def _quality_score(item: SearchResult, business_name: str, address: str) -> tuple[int, list[str]]:
     reasons: list[str] = []
     if _is_bad_result(item):
         return -100, ["bad_generic_or_naver_menu"]
 
-    text = f"{item.title} {item.snippet} {item.text_excerpt} {item.url}".lower()
+    combined_text = f"{item.title} {item.snippet} {item.text_excerpt} {item.url}"
+    text = combined_text.lower()
     name = business_name.lower().strip()
     address_terms = [t.lower() for t in _important_address_terms(address)]
+    region_level, region_matches = _region_match_level(combined_text, address)
 
     score = 0
     url_l = item.url.lower()
 
-    if "place.naver.com" in url_l or "map.naver.com" in url_l:
+    is_blog = "blog.naver.com" in url_l or "m.blog.naver.com" in url_l
+    is_place = "place.naver.com" in url_l or "map.naver.com" in url_l
+    is_local_review = any(x in url_l for x in ["diningcode.com", "mangoplate.com", "place.map.kakao.com"])
+
+    if is_place:
         score += 40; reasons.append("place_or_map")
-    if "blog.naver.com" in url_l or "m.blog.naver.com" in url_l:
+    if is_blog:
         score += 30; reasons.append("naver_blog")
-    if any(x in url_l for x in ["diningcode.com", "mangoplate.com", "place.map.kakao.com"]):
+    if is_local_review:
         score += 28; reasons.append("local_review_site")
     if "youtube.com" in url_l or "youtu.be" in url_l:
         score += 15; reasons.append("youtube")
 
-    if name and name in text:
+    has_name = bool(name and name in text)
+    has_any_address = bool(address_terms and any(t in text for t in address_terms))
+
+    if has_name:
         score += 25; reasons.append("business_name_match")
-    if address_terms and any(t in text for t in address_terms):
+    if has_any_address:
         score += 25; reasons.append("address_term_match")
+
+    if has_name and region_level == "strong":
+        score += 35; reasons.append("same_source_name_and_strong_address")
+    elif has_name and region_level == "medium":
+        score += 25; reasons.append("same_source_name_and_medium_address")
+    elif has_name and region_level == "weak":
+        score += 10; reasons.append("same_source_name_and_weak_region")
+    elif has_name and region_level == "none":
+        score += 0; reasons.append("name_only_no_region")
+
+    if _has_conflicting_region(combined_text, address):
+        score -= 80; reasons.append("conflicting_region_penalty")
+
+    if is_blog and has_name and region_level == "none":
+        score = min(score, 45); reasons.append("blog_name_only_score_cap")
+    if has_name and not has_any_address and region_level == "none":
+        score = min(score, 55); reasons.append("name_only_score_cap")
+    if not has_name and region_level == "none":
+        score -= 30; reasons.append("no_name_no_region_penalty")
+
     if item.text_excerpt and len(item.text_excerpt) >= 120:
         score += 10; reasons.append("has_excerpt")
     if item.snippet and len(item.snippet) >= 40:
         score += 5; reasons.append("has_snippet")
+
+    structured = _extract_structured_facts(item)
+    if structured["phone_numbers"]:
+        score += 5; reasons.append("phone_mention")
+    if structured["hours_mentions"]:
+        score += 5; reasons.append("hours_mention")
+    if structured["menu_mentions"]:
+        score += 3; reasons.append("menu_mention")
 
     generic_title = any(k in (item.title or "").lower() for k in [k.lower() for k in BAD_TITLE_KEYWORDS])
     if generic_title and not (name and name in (item.title or "").lower()):
@@ -603,6 +701,7 @@ def research_business(
         score_info = valid_scores.get(item.url, {})
         row["quality_score"] = score_info.get("quality_score", 0)
         row["quality_reasons"] = score_info.get("quality_reasons", [])
+        row["structured_facts"] = _extract_structured_facts(item)
         results_as_dicts.append(row)
 
     valid_count = len([r for r in results_as_dicts if int(r.get("quality_score", 0)) >= 25])
@@ -618,6 +717,18 @@ def research_business(
         "average_quality_score": avg_quality,
         "quality_threshold": 25,
         "results": results_as_dicts,
+        "structured_facts_by_source": [
+            {
+                "title": r.get("title", ""),
+                "url": r.get("url", ""),
+                "domain_type": r.get("domain_type", ""),
+                "structured_facts": r.get("structured_facts", {}),
+            }
+            for r in results_as_dicts
+            if r.get("structured_facts", {}).get("phone_numbers")
+            or r.get("structured_facts", {}).get("hours_mentions")
+            or r.get("structured_facts", {}).get("menu_mentions")
+        ],
         "group_counts": {k: len(v) for k, v in grouped.items()},
     }
 
