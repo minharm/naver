@@ -1,0 +1,13 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+output/
+uploads/
+data/*.json
+data/*.txt
+projects/
+*.zip
+output/naver_playwright_profile/
