@@ -42,19 +42,20 @@ from modules.project_manager import (
     delete_project,
     rename_project,
     duplicate_project,
+    validate_project_snapshot,
 )
 
 load_dotenv()
 
 st.set_page_config(
-    page_title="네이버 블로그 글 자동작성 v0.5.9-no-image-ai-resize-only",
+    page_title="네이버 블로그 글 자동작성 v0.6.0-project-stable",
     page_icon="✍️",
     layout="wide",
 )
 
-st.title("✍️ 네이버 블로그 글 자동작성 v0.5.9-no-image-ai-resize-only")
+st.title("✍️ 네이버 블로그 글 자동작성 v0.6.0-project-stable")
 st.caption(
-    "이미지 생성/가공 없이, 이미지 분석용 리사이즈 1024px와 최종 글 품질 평가 기능을 유지합니다."
+    "프로젝트 저장/불러오기 안정화, 이미지 경로 보존, 품질 평가 복원을 반영했습니다."
 )
 
 
@@ -207,6 +208,8 @@ for _key, _default in {
     "generated_package_zip": "",
     "generated_package_dir": "",
     "user_experience_note": "",
+    "quality_report": {},
+    "current_project_name": "",
 }.items():
     st.session_state.setdefault(_key, _default)
 
@@ -237,11 +240,32 @@ with st.sidebar:
         try:
             saved_path = save_project_snapshot(project_name_input, st.session_state)
             st.session_state["current_project_name"] = saved_path.parent.name
-            _notify_and_refresh(f"프로젝트 저장 완료: {saved_path.parent.name}")
+            saved_data = load_project_snapshot(saved_path.parent.name)
+            status = validate_project_snapshot(saved_data).get("status", {})
+            _notify_and_refresh(
+                f"프로젝트 저장 완료: {saved_path.parent.name} "
+                f"/ 이미지 {status.get('image_count', 0)}개, 영상 {status.get('video_count', 0)}개, "
+                f"품질평가 {'있음' if status.get('has_quality_report') else '없음'}"
+            )
         except Exception as exc:  # noqa: BLE001
             st.error(f"프로젝트 저장 실패: {exc}")
 
     selected_project = st.selectbox("최근 프로젝트", [""] + existing_projects, index=0)
+    if selected_project:
+        try:
+            preview_data = load_project_snapshot(selected_project)
+            health = preview_data.get("project_health") or validate_project_snapshot(preview_data)
+            status = health.get("status", {})
+            with st.expander("선택 프로젝트 상태", expanded=False):
+                st.caption(f"이미지: {status.get('image_count', 0)}개 / 영상: {status.get('video_count', 0)}개")
+                st.caption(f"생성글: {'있음' if status.get('has_generated_post') else '없음'} / 품질평가: {'있음' if status.get('has_quality_report') else '없음'}")
+                st.caption(f"업로드 패키지 ZIP: {'있음' if status.get('has_upload_package_zip') else '없음'} / 폴더: {'있음' if status.get('has_upload_package_dir') else '없음'}")
+                if health.get("missing_media_count"):
+                    st.warning(f"누락된 미디어 파일 {health.get('missing_media_count')}개가 있습니다.")
+                else:
+                    st.success("미디어 경로 점검 정상")
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"프로젝트 상태 확인 실패: {exc}")
     pc1, pc2 = st.columns(2)
     with pc1:
         if st.button("불러오기", use_container_width=True, disabled=not bool(selected_project)):
@@ -251,7 +275,7 @@ with st.sidebar:
                     "samples", "style_profile", "business_info", "business_research",
                     "business_analysis", "image_analysis", "video_analysis",
                     "generated_post", "generated_package_zip", "generated_package_dir",
-                    "user_experience_note",
+                    "user_experience_note", "quality_report",
                 ]:
                     if key in data:
                         st.session_state[key] = data.get(key)
@@ -341,6 +365,8 @@ with st.sidebar:
             "generated_package_zip",
             "generated_package_dir",
             "user_experience_note",
+            "quality_report",
+            "current_project_name",
         ]:
             st.session_state[key] = [] if key in ["samples", "image_analysis", "video_analysis"] else ({} if key in ["business_info", "business_research", "business_analysis"] else "")
         st.session_state["style_profile"] = None

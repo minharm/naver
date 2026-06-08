@@ -1,4 +1,37 @@
-# 네이버 블로그 글 자동작성 v0.5.9-no-image-ai-resize-only
+# 네이버 블로그 글 자동작성 v0.6.0-project-stable
+
+## v0.6.0-project-stable 수정 사항
+
+### 프로젝트 저장/불러오기 안정화
+
+업체별 반복 작업 시 이전 업체 자료가 섞이거나 이미지 경로가 깨지는 문제를 줄이기 위해 프로젝트 저장 구조를 보강했습니다.
+
+추가/개선 내용:
+
+- 프로젝트 저장 시 이미지/영상 파일을 `projects/프로젝트명/media/`로 복사
+- 생성글을 `projects/프로젝트명/generated_post.txt`로 별도 저장
+- 품질평가 결과를 `projects/프로젝트명/quality_report.json`으로 별도 저장
+- 업로드 패키지 ZIP/폴더를 프로젝트 폴더 안으로 복사
+- 프로젝트 불러오기 시 generated_post/quality_report 복원
+- 사이드바에서 선택 프로젝트 상태 점검 표시
+- 미디어 파일 누락 여부 검사
+- 프로젝트 상태 manifest 생성
+
+프로젝트 폴더 구조 예시:
+
+```text
+projects/
+  후이후이/
+    project.json
+    project_manifest.json
+    generated_post.txt
+    quality_report.json
+    media/
+    upload_package/
+    package_zip/
+```
+
+주의: `projects/`는 개인 작업 데이터이므로 배포 ZIP에는 포함하지 않습니다.
 
 ## v0.5.9-no-image-ai-resize-only 수정 사항
 

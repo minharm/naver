@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-VERSION = "v0_5_9_no_image_ai_resize_only"
+VERSION = "v0_6_0_project_stable"
 OUT = ROOT / f"blog_writer_ai_{VERSION}_clean_release.zip"
 
 ALLOW_FILES = {
